@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "806112196065",
+    "project_id": "notifications-test-282d5",
+    "storage_bucket": "notifications-test-282d5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:806112196065:android:3677f068ba00611cbc0ea0",
+        "android_client_info": {
+          "package_name": "com.example.not_test"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDhcJQzk7GYdQYCI42oZk3eKEEkX1wBjqM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
