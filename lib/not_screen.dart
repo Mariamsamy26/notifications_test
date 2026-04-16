@@ -1,44 +1,8 @@
-import 'dart:convert';
+import 'dart:async';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:not_test/notification_item.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
-@pragma('vm:entry-point')
-Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  print("Background message: ${message.messageId}");
-  
-  // Save notification locally when in background
-  await _saveNotificationLocally(message);
-}
-
-// Save notification to SharedPreferences
-Future<void> _saveNotificationLocally(RemoteMessage message) async {
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    
-    // Get saved notifications list
-    List<String> savedNotifications = prefs.getStringList('notifications') ?? [];
-    
-    // Convert notification to JSON with all data
-    NotificationItem notificationItem = NotificationItem.fromRemoteMessage(message);
-    String notificationJson = jsonEncode(notificationItem.toJson());
-    
-    // Add new notification at the beginning
-    savedNotifications.insert(0, notificationJson);
-    
-    // Keep only last 50 notifications
-    if (savedNotifications.length > 50) {
-      savedNotifications = savedNotifications.sublist(0, 50);
-    }
-    
-    await prefs.setStringList('notifications', savedNotifications);
-    print('✅ Notification saved locally');
-  } catch (e) {
-    print('❌ Error saving notification: $e');
-  }
-}
+import 'package:not_test/services/notification_service.dart';
 
 class NotScreen extends StatefulWidget {
   const NotScreen({super.key});
@@ -50,158 +14,59 @@ class NotScreen extends StatefulWidget {
 class _NotScreenState extends State<NotScreen> {
   List<NotificationItem> notifications = [];
   bool _isLoading = true;
-
-  final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
-      FlutterLocalNotificationsPlugin();
+  StreamSubscription? _tapSubscription;
 
   @override
   void initState() {
     super.initState();
+    _initAndLoad();
     
-    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-    
-    setupNotifications();
-    _loadSavedNotifications();
+    // Listen for foreground updates to refresh the list
+    FirebaseMessaging.onMessage.listen((_) => _loadNotifications());
     
     // Handle notification tap when app is in background
-    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
-      print('Notification tapped - opening app');
+    FirebaseMessaging.onMessageOpenedApp.listen((message) {
       _handleNotificationClick(NotificationItem.fromRemoteMessage(message));
     });
+
+    // Handle local notification tap
+    _tapSubscription = NotificationService.onNotificationTap.listen((payload) {
+      // Logic to find notification from payload if needed
+      // For now, just show a message
+      print('Local notification tapped with payload: $payload');
+    });
     
-    // Check if app was opened from a terminated state
     _checkInitialMessage();
   }
 
-  // Load saved notifications from SharedPreferences
-  Future<void> _loadSavedNotifications() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      List<String> savedNotifications = prefs.getStringList('notifications') ?? [];
-      
-      List<NotificationItem> loadedNotifications = [];
-      
-      for (String notifJson in savedNotifications) {
-        try {
-          Map<String, dynamic> data = jsonDecode(notifJson);
-          loadedNotifications.add(NotificationItem.fromJson(data));
-        } catch (e) {
-          print('Error parsing saved notification: $e');
-        }
-      }
-      
+  @override
+  void dispose() {
+    _tapSubscription?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _initAndLoad() async {
+    await _loadNotifications();
+  }
+
+  Future<void> _loadNotifications() async {
+    final loaded = await NotificationService.getSavedNotifications();
+    if (mounted) {
       setState(() {
-        notifications = loadedNotifications;
-        _isLoading = false;
-      });
-      
-      print('✅ Loaded ${notifications.length} notifications from local storage');
-    } catch (e) {
-      print('❌ Error loading notifications: $e');
-      setState(() {
+        notifications = loaded;
         _isLoading = false;
       });
     }
   }
 
-  void setupNotifications() async {
-    // Android setup
-    const AndroidInitializationSettings initializationSettingsAndroid =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
-
-    // iOS setup
-    const DarwinInitializationSettings initializationSettingsIOS =
-        DarwinInitializationSettings();
-
-    const InitializationSettings initializationSettings = InitializationSettings(
-      android: initializationSettingsAndroid,
-      iOS: initializationSettingsIOS,
-    );
-
-    await flutterLocalNotificationsPlugin.initialize(
-      initializationSettings,
-      onDidReceiveNotificationResponse: (NotificationResponse response) async {
-        print('Local notification tapped: ${response.payload}');
-        
-        // Handle local notification tap
-        if (response.payload != null && response.payload!.isNotEmpty) {
-          try {
-            Map<String, dynamic> payload = jsonDecode(response.payload!);
-            print('Payload data: $payload');
-          } catch (e) {
-            print('Error parsing payload: $e');
-          }
-        }
-      },
-    );
-
-    // Request permissions
-    await FirebaseMessaging.instance.requestPermission(
-      alert: true,
-      badge: true,
-      sound: true,
-      provisional: false,
-    );
-
-    // Get FCM token
-    String? token = await FirebaseMessaging.instance.getToken();
-    print("🔑 FCM Token: $token");
-
-    // Listen for messages while app is in foreground
-    FirebaseMessaging.onMessage.listen((RemoteMessage message) async {
-      print('📩 New message while app is open');
-      
-      // Save notification locally
-      await _saveNotificationLocally(message);
-      
-      // Reload notifications
-      await _loadSavedNotifications();
-
-      // Show local notification
-      _showLocalNotification(message);
-    });
-  }
-
-  void _showLocalNotification(RemoteMessage message) {
-    if (message.notification != null) {
-      // Prepare payload with all data
-      String payload = jsonEncode({
-        'messageId': message.messageId,
-        'data': message.data,
-      });
-
-      flutterLocalNotificationsPlugin.show(
-        message.hashCode, 
-        message.notification!.title,
-        message.notification!.body,
-        NotificationDetails(
-          android: AndroidNotificationDetails(
-            'channel_id', 
-            'notifications', 
-            channelDescription: 'Main notifications channel',
-            importance: Importance.max,
-            priority: Priority.high,
-            playSound: true,
-            enableVibration: true,
-            showWhen: true,
-            enableLights: true,
-            color: Colors.blue,
-          ),
-          iOS: DarwinNotificationDetails(
-            presentAlert: true,
-            presentBadge: true,
-            presentSound: true,
-          ),
-        ),
-        payload: payload, // Send data as payload
-      );
+  void _checkInitialMessage() async {
+    RemoteMessage? initialMessage = await FirebaseMessaging.instance.getInitialMessage();
+    if (initialMessage != null) {
+      _handleNotificationClick(NotificationItem.fromRemoteMessage(initialMessage));
     }
   }
 
   void _handleNotificationClick(NotificationItem notification) {
-    print('Notification data: ${notification.data}');
-    
-    // Show snackbar with notification info
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Tapped: ${notification.title ?? 'Notification'}'),
@@ -209,48 +74,16 @@ class _NotScreenState extends State<NotScreen> {
         behavior: SnackBarBehavior.floating,
       ),
     );
-    
-    // TODO: Navigate to specific screen based on data
-    // Example:
-    // if (notification.data['type'] == 'order') {
-    //   Navigator.pushNamed(context, '/order', arguments: notification.data);
-    // } else if (notification.data['type'] == 'offer') {
-    //   Navigator.pushNamed(context, '/offer', arguments: notification.data);
-    // }
+    // TODO: Navigate to specific screen based on notification.data
   }
 
-  void _checkInitialMessage() async {
-    RemoteMessage? initialMessage = await FirebaseMessaging.instance.getInitialMessage();
-    
-    if (initialMessage != null) {
-      print('📦 App opened from notification (terminated state)');
-      
-      // Save notification
-      await _saveNotificationLocally(initialMessage);
-      
-      // Reload notifications
-      await _loadSavedNotifications();
-      
-      // Handle click
-      _handleNotificationClick(NotificationItem.fromRemoteMessage(initialMessage));
-    }
-  }
-
-  // Clear all notifications
   Future<void> _clearAllNotifications() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('notifications');
-      
-      setState(() {
-        notifications.clear();
-      });
-      
+    await NotificationService.clearAll();
+    await _loadNotifications();
+    if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('✅ All notifications cleared')),
       );
-    } catch (e) {
-      print('Error clearing notifications: $e');
     }
   }
 
@@ -270,60 +103,134 @@ class _NotScreenState extends State<NotScreen> {
         ],
       ),
       body: _isLoading
-          ? const Center(
-              child: CircularProgressIndicator(),
-            )
+          ? const Center(child: CircularProgressIndicator())
           : notifications.isEmpty
-              ? const Center(
+              ? _buildEmptyState()
+              : _buildNotificationList(),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return const Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.notifications_off, size: 80, color: Colors.grey),
+          SizedBox(height: 16),
+          Text(
+            "No notifications yet",
+            style: TextStyle(fontSize: 18, color: Colors.grey),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNotificationList() {
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: notifications.length,
+      itemBuilder: (context, index) {
+        final notification = notifications[index];
+        return _NotificationCard(
+          notification: notification,
+          onTap: () => _handleNotificationClick(notification),
+        );
+      },
+    );
+  }
+}
+
+class _NotificationCard extends StatelessWidget {
+  final NotificationItem notification;
+  final VoidCallback onTap;
+
+  const _NotificationCard({
+    required this.notification,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.notifications_active_outlined,
+                    color: Colors.blue,
+                    size: 24,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
                   child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(
-                        Icons.notifications_off,
-                        size: 80,
-                        color: Colors.grey,
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Expanded(
+                            child: Text(
+                              notification.title ?? "No title",
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 16,
+                                color: Colors.black87,
+                              ),
+                            ),
+                          ),
+                          Text(
+                            _formatTime(notification.sentTime),
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey.shade500,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
                       ),
-                      SizedBox(height: 16),
+                      const SizedBox(height: 4),
                       Text(
-                        "No notifications yet",
-                        style: TextStyle(fontSize: 18, color: Colors.grey),
+                        notification.body ?? "No body content available",
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey.shade600,
+                          height: 1.3,
+                        ),
                       ),
                     ],
                   ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: notifications.length,
-                  itemBuilder: (context, index) {
-                    final notification = notifications[index];
-
-                    return Card(
-                      elevation: 2,
-                      margin: const EdgeInsets.only(bottom: 8),
-                      child: ListTile(
-                        leading: CircleAvatar(
-                          backgroundColor: Colors.blue.shade100,
-                          child: const Icon(
-                            Icons.notifications,
-                            color: Colors.blue,
-                          ),
-                        ),
-                        title: Text(
-                          notification.title ?? "No title",
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        subtitle: Text(notification.body ?? "No body"),
-                        trailing: Text(
-                          _formatTime(notification.sentTime),
-                          style: const TextStyle(fontSize: 12, color: Colors.grey),
-                        ),
-                        onTap: () {
-                          _handleNotificationClick(notification);
-                        },
-                      ),
-                    );
-                  },
                 ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -332,14 +239,9 @@ class _NotScreenState extends State<NotScreen> {
     final now = DateTime.now();
     final difference = now.difference(time);
     
-    if (difference.inMinutes < 1) {
-      return 'now';
-    } else if (difference.inHours < 1) {
-      return '${difference.inMinutes}m';
-    } else if (difference.inDays < 1) {
-      return '${difference.inHours}h';
-    } else {
-      return '${time.day}/${time.month}/${time.year}';
-    }
+    if (difference.inMinutes < 1) return 'now';
+    if (difference.inHours < 1) return '${difference.inMinutes}m';
+    if (difference.inDays < 1) return '${difference.inHours}h';
+    return '${time.day}/${time.month}/${time.year}';
   }
-}
+}
